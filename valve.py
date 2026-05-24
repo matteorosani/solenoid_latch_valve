@@ -10,8 +10,10 @@ from homeassistant.components.valve import ValveEntity, ValveEntityFeature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_OPEN
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
+from propcache import cached_property
 
 from . import setup_output, write_output
 from .const import (
@@ -64,6 +66,7 @@ async def async_setup_entry(
             pulse_duration=pulse_duration,
             # Unique ID is stable: tied to the entry + hardware port
             unique_id=f"{entry.entry_id}_port_{valve[CONF_VALVE_PORT]}",
+            entry_id=entry.entry_id,
         )
         for valve in valves_conf
     ]
@@ -87,6 +90,7 @@ class RPiGPIOValve(ValveEntity):
         polarity_delay: float,
         pulse_duration: float,
         unique_id: str | None = None,
+        entry_id: str | None = None,
     ) -> None:
         self._attr_name = name
         self._attr_unique_id = unique_id
@@ -97,9 +101,28 @@ class RPiGPIOValve(ValveEntity):
         self._polarity_lock = polarity_lock
         self._polarity_delay = polarity_delay
         self._pulse_duration = pulse_duration
+        self._entry_id = entry_id
         self._state = False
         setup_output(self._port)
         write_output(self._port, 1)
+
+    @cached_property
+    def device_info(self) -> DeviceInfo | None:
+        """
+        Return device info to group this entity under a device.
+
+        All entities sharing the same identifier tuple are grouped
+        under the same device. Here we use (DOMAIN, entry_id) so all
+        valves of one controller appear together.
+        """
+        if self._entry_id is None:
+            return None
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._entry_id)},
+            name="Irrigation Controller",
+            model="Solenoid Latch Valve Controller",
+            manufacturer="Custom",
+        )
 
     async def _pulse(self) -> None:
         """Send a brief impulse to the valve relay."""
