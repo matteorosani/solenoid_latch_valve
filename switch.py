@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from time import sleep
 from typing import Any
 
 import voluptuous as vol
@@ -58,8 +58,13 @@ def setup_platform(
     """Set up the Raspberry PI GPIO devices."""
     setup_reload_service(hass, DOMAIN, PLATFORMS)
 
+    hass.data.setdefault(DOMAIN, {})
+    if "polarity_lock" not in hass.data[DOMAIN]:
+        hass.data[DOMAIN]["polarity_lock"] = asyncio.Lock()
+
+    polarity_lock = hass.data[DOMAIN]["polarity_lock"]
+
     _LOGGER.debug("Loading switch platform with config %s", config)
-    valves = []
 
     valves_conf: list | None = config.get(CONF_SWITCHES)
     red_wire_port = config[CONF_RED_WIRE_PORT]
@@ -77,7 +82,8 @@ def setup_platform(
             valve[CONF_PORT],
             red_wire_port,
             black_wire_port,
-            valve[CONF_UNIQUE_ID],
+            polarity_lock,
+            valve.get(CONF_UNIQUE_ID),
         )
         for valve in valves_conf
     ]
@@ -94,8 +100,8 @@ class RPiGPIOValve(SwitchEntity):
         port,
         red_wire_port,
         black_wire_port,
+        polarity_lock: asyncio.Lock,
         unique_id=None,
-        skip_reset=False,
     ) -> None:
         """Initialize the pin."""
         self._attr_name = name or DEVICE_DEFAULT_NAME
@@ -104,18 +110,14 @@ class RPiGPIOValve(SwitchEntity):
         self._port = port
         self._red_wire_port = red_wire_port
         self._black_wire_port = black_wire_port
+        self._polarity_lock = polarity_lock
         self._state = False
         setup_output(self._port)
         write_output(self._port, 1)
-        if not skip_reset:
-            write_output(self._red_wire_port, 1)
-            write_output(self._black_wire_port, 0)
-            sleep(0.5)
-            self._pulse()
 
-    def _pulse(self):
+    async def _pulse(self):
         write_output(self._port, 0)
-        sleep(0.2)
+        await asyncio.sleep(0.2)
         write_output(self._port, 1)
 
     @property
@@ -123,35 +125,37 @@ class RPiGPIOValve(SwitchEntity):
         """Return true if the valve is open."""
         return self._state
 
-    def turn_on(self, **kwargs: Any) -> None:
+    async def async_turn_on(self, **kwargs: Any) -> None:
         """Open the valve."""
         _LOGGER.info("Turn on %s", self._attr_name)
-        write_output(self._red_wire_port, 0)
-        write_output(self._black_wire_port, 1)
-        sleep(0.5)
-        self._pulse()
-        self._state = True
-        self.schedule_update_ha_state()
+        async with self._polarity_lock:
+            write_output(self._red_wire_port, 0)
+            write_output(self._black_wire_port, 1)
+            await asyncio.sleep(0.5)
+            await self._pulse()
+            self._state = True
+        self.async_write_ha_state()
 
-    def turn_off(self, **kwargs: Any) -> None:
+    async def async_turn_off(self, **kwargs: Any) -> None:
         """Close the valve."""
         _LOGGER.info("Turn off %s", self._attr_name)
-        write_output(self._red_wire_port, 1)
-        write_output(self._black_wire_port, 0)
-        sleep(0.5)
-        self._pulse()
-        self._state = False
-        self.schedule_update_ha_state()
+        async with self._polarity_lock:
+            write_output(self._red_wire_port, 1)
+            write_output(self._black_wire_port, 0)
+            await asyncio.sleep(0.5)
+            await self._pulse()
+            self._state = False
+        self.async_write_ha_state()
 
 
 class PersistentRPiGPIOValve(RPiGPIOValve, RestoreEntity):
     """Representation of a persistent Raspberry Pi GPIO."""
 
     def __init__(
-        self, name, port, red_wire_port, black_wire_port, unique_id=None
+        self, name, port, red_wire_port, black_wire_port, polarity_lock, unique_id=None
     ) -> None:
         """Initialize the pin."""
-        super().__init__(name, port, red_wire_port, black_wire_port, unique_id, True)
+        super().__init__(name, port, red_wire_port, black_wire_port, polarity_lock, unique_id)
 
     async def async_added_to_hass(self) -> None:
         """Call when the switch is added to hass."""
