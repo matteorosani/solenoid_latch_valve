@@ -1,0 +1,42 @@
+# Loads default set of integrations. Do not remove.
+default_config:
+
+# Load frontend themes from the themes folder
+frontend:
+  themes: !include_dir_merge_named themes
+
+automation: !include automations.yaml
+script: !include scripts.yaml
+scene: !include scenes.yaml
+
+logger:
+  logs:
+    custom_components.solenoid_latch_valve: debug
+
+switch:
+- platform: solenoid_latch_valve
+  red_wire_port: 18
+  black_wire_port: 22
+  switches:
+  - port: 12
+    name: "Valve 1"
+    unique_id: valve_1_switch_port_12
+  - port: 16
+    name: "Valve 2"
+    unique_id: valve_2_switch_port_16
+
+# switch:
+# - platform: rpi_gpio
+#   switches:
+#   - port: 18
+#     name: "Red wire switch"
+#     unique_id: red_wire_switch_port_18
+#   - port: 22
+#     name: "Black wire switch"
+#     unique_id: black_wire_switch_port_22
+#   - port: 12
+#     name: "Valve 1"
+#     unique_id: valve_1_switch_port_12
+#   - port: 16
+#     name: "Valve 2"
+#     unique_id: valve_2_switch_port_16

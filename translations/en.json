@@ -1,0 +1,65 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Configure Controller",
+        "data": {
+          "red_wire_port": "Red wire GPIO port (BCM)",
+          "black_wire_port": "Black wire GPIO port (BCM)",
+          "polarity_delay": "Polarity switch delay (seconds)",
+          "pulse_duration": "Pulse duration (seconds)"
+        }
+      },
+      "add_valve": {
+        "title": "Add Valve",
+        "description": "{valve_count}",
+        "data": {
+          "name": "Valve name",
+          "port": "GPIO port (BCM)",
+          "add_another": "Add another valve after this one"
+        }
+      }
+    },
+    "error": {
+      "duplicate_polarity_ports": "Red and black wire ports must be different.",
+      "port_reserved_for_polarity": "This port is already used by the polarity relay.",
+      "duplicate_valve_port": "A valve on this port already exists."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options",
+        "menu_options": {
+          "edit_timing": "Edit timing parameters",
+          "add_valve": "Add a valve",
+          "remove_valve": "Remove a valve"
+        }
+      },
+      "edit_timing": {
+        "title": "Edit Timing",
+        "data": {
+          "polarity_delay": "Polarity switch delay (seconds)",
+          "pulse_duration": "Pulse duration (seconds)"
+        }
+      },
+      "add_valve": {
+        "title": "Add Valve",
+        "data": {
+          "name": "Valve name",
+          "port": "GPIO port (BCM)"
+        }
+      },
+      "remove_valve": {
+        "title": "Remove Valve",
+        "data": {
+          "valve": "Select valve to remove"
+        }
+      }
+    },
+    "error": {
+      "port_reserved_for_polarity": "This port is already used by the polarity relay.",
+      "duplicate_valve_port": "A valve on this port already exists."
+    }
+  }
+}

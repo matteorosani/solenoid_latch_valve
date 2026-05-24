@@ -1,4 +1,4 @@
-"""Allows to configure a valve using RPi GPIO."""
+"""Valve platform for Solenoid latch valve."""
 
 from __future__ import annotations
 
@@ -6,168 +6,141 @@ import asyncio
 import logging
 from typing import Any
 
-import voluptuous as vol
-
-from homeassistant.components.valve import (
-    PLATFORM_SCHEMA as VALVE_PLATFORM_SCHEMA,
-    ValveEntity,
-    ValveEntityFeature,
-)
-from homeassistant.const import (
-    CONF_NAME,
-    CONF_PORT,
-    CONF_SWITCHES,
-    CONF_UNIQUE_ID,
-    DEVICE_DEFAULT_NAME,
-    STATE_OPEN,
-)
+from homeassistant.components.valve import ValveEntity, ValveEntityFeature
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import STATE_OPEN
 from homeassistant.core import HomeAssistant
-import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.reload import setup_reload_service
 from homeassistant.helpers.restore_state import RestoreEntity
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
-from . import PLATFORMS, setup_output, write_output
-from .const import CONF_BLACK_WIRE_PORT, CONF_RED_WIRE_PORT, DOMAIN
+from . import setup_output, write_output
+from .const import (
+    CONF_BLACK_WIRE_PORT,
+    CONF_POLARITY_DELAY,
+    CONF_PULSE_DURATION,
+    CONF_RED_WIRE_PORT,
+    CONF_VALVE_NAME,
+    CONF_VALVE_PORT,
+    CONF_VALVES,
+    DEFAULT_POLARITY_DELAY,
+    DEFAULT_PULSE_DURATION,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__package__)
 
-_VALVE_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_NAME): cv.string,
-        vol.Required(CONF_PORT): cv.positive_int,
-        vol.Optional(CONF_UNIQUE_ID): cv.string,
-    }
-)
 
-PLATFORM_SCHEMA = VALVE_PLATFORM_SCHEMA.extend(
-    {
-        vol.Required(CONF_SWITCHES): vol.All(cv.ensure_list, [_VALVE_SCHEMA]),
-        vol.Required(CONF_RED_WIRE_PORT): cv.positive_int,
-        vol.Required(CONF_BLACK_WIRE_PORT): cv.positive_int,
-    }
-)
-
-
-def setup_platform(
+async def async_setup_entry(
     hass: HomeAssistant,
-    config: ConfigType,
-    add_entities: AddEntitiesCallback,
-    discovery_info: DiscoveryInfoType | None = None,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the Raspberry PI GPIO devices."""
-    setup_reload_service(hass, DOMAIN, PLATFORMS)
+    """
+    Called by HA after async_setup_entry in __init__.py forwards to this platform.
+    Reads configuration from the config entry and creates valve entities.
+    """
+    polarity_lock: asyncio.Lock = hass.data[DOMAIN][entry.entry_id]["polarity_lock"]
 
-    hass.data.setdefault(DOMAIN, {})
-    if "polarity_lock" not in hass.data[DOMAIN]:
-        hass.data[DOMAIN]["polarity_lock"] = asyncio.Lock()
+    # Hardware ports come from entry.data (set once at setup)
+    red_wire_port: int = entry.data[CONF_RED_WIRE_PORT]
+    black_wire_port: int = entry.data[CONF_BLACK_WIRE_PORT]
 
-    polarity_lock = hass.data[DOMAIN]["polarity_lock"]
-
-    _LOGGER.debug("Loading valve platform with config %s", config)
-
-    valves_conf: list | None = config.get(CONF_SWITCHES)
-    red_wire_port = config[CONF_RED_WIRE_PORT]
-    black_wire_port = config[CONF_BLACK_WIRE_PORT]
-
-    if valves_conf is None:
-        return
+    # Tunable settings come from entry.options (editable via the options flow)
+    polarity_delay: float = entry.options.get(CONF_POLARITY_DELAY, DEFAULT_POLARITY_DELAY)
+    pulse_duration: float = entry.options.get(CONF_PULSE_DURATION, DEFAULT_PULSE_DURATION)
+    valves_conf: list = entry.options.get(CONF_VALVES, [])
 
     setup_output(red_wire_port)
     setup_output(black_wire_port)
 
-    valves = [
+    entities = [
         PersistentRPiGPIOValve(
-            valve[CONF_NAME],
-            valve[CONF_PORT],
-            red_wire_port,
-            black_wire_port,
-            polarity_lock,
-            valve.get(CONF_UNIQUE_ID),
+            name=valve[CONF_VALVE_NAME],
+            port=valve[CONF_VALVE_PORT],
+            red_wire_port=red_wire_port,
+            black_wire_port=black_wire_port,
+            polarity_lock=polarity_lock,
+            polarity_delay=polarity_delay,
+            pulse_duration=pulse_duration,
+            # Unique ID is stable: tied to the entry + hardware port
+            unique_id=f"{entry.entry_id}_port_{valve[CONF_VALVE_PORT]}",
         )
         for valve in valves_conf
     ]
 
-    add_entities(valves, True)
+    async_add_entities(entities, True)
 
 
 class RPiGPIOValve(ValveEntity):
-    """Representation of a Raspberry Pi GPIO."""
+    """Representation of a latching solenoid valve on Raspberry Pi GPIO."""
 
     _attr_supported_features = ValveEntityFeature.OPEN | ValveEntityFeature.CLOSE
     _attr_reports_position = False
 
     def __init__(
         self,
-        name,
-        port,
-        red_wire_port,
-        black_wire_port,
+        name: str,
+        port: int,
+        red_wire_port: int,
+        black_wire_port: int,
         polarity_lock: asyncio.Lock,
-        unique_id=None,
+        polarity_delay: float,
+        pulse_duration: float,
+        unique_id: str | None = None,
     ) -> None:
-        """Initialize the pin."""
-        self._attr_name = name or DEVICE_DEFAULT_NAME
+        self._attr_name = name
         self._attr_unique_id = unique_id
         self._attr_should_poll = False
         self._port = port
         self._red_wire_port = red_wire_port
         self._black_wire_port = black_wire_port
         self._polarity_lock = polarity_lock
+        self._polarity_delay = polarity_delay
+        self._pulse_duration = pulse_duration
         self._state = False
         setup_output(self._port)
         write_output(self._port, 1)
 
-    async def _pulse(self):
+    async def _pulse(self) -> None:
+        """Send a brief impulse to the valve relay."""
         write_output(self._port, 0)
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(self._pulse_duration)
         write_output(self._port, 1)
 
     @property
-    def is_closed(self) -> bool | None:
-        """Return true if the valve is closed."""
+    def is_closed(self) -> bool:
         return not self._state
 
     async def async_open_valve(self, **kwargs: Any) -> None:
-        """Open the valve."""
-        _LOGGER.info("Turn on %s", self._attr_name)
+        _LOGGER.info("Opening %s", self._attr_name)
         async with self._polarity_lock:
             write_output(self._red_wire_port, 0)
             write_output(self._black_wire_port, 1)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(self._polarity_delay)
             await self._pulse()
             self._state = True
         self.async_write_ha_state()
 
     async def async_close_valve(self, **kwargs: Any) -> None:
-        """Close the valve."""
-        _LOGGER.info("Turn off %s", self._attr_name)
+        _LOGGER.info("Closing %s", self._attr_name)
         async with self._polarity_lock:
             write_output(self._red_wire_port, 1)
             write_output(self._black_wire_port, 0)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(self._polarity_delay)
             await self._pulse()
             self._state = False
         self.async_write_ha_state()
 
 
 class PersistentRPiGPIOValve(RestoreEntity, RPiGPIOValve):
-    """Representation of a persistent Raspberry Pi GPIO."""
-
-    def __init__(
-        self, name, port, red_wire_port, black_wire_port, polarity_lock, unique_id=None
-    ) -> None:
-        """Initialize the pin."""
-        super().__init__(name, port, red_wire_port, black_wire_port, polarity_lock, unique_id)
+    """Valve that restores its state after HA restarts."""
 
     async def async_added_to_hass(self) -> None:
-        """Call when the valve is added to hass."""
-        _LOGGER.debug("Added to HASS called for %s", self._attr_name)
         await super().async_added_to_hass()
         state = await self.async_get_last_state()
         if not state:
             return
+        _LOGGER.debug("Restoring state '%s' for %s", state.state, self._attr_name)
         self._state = state.state == STATE_OPEN
         if self._state:
             await self.async_open_valve()

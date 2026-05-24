@@ -2,51 +2,90 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
-_LOGGER = logging.getLogger(__package__)
-
 try:
-    from RPi import GPIO  # pylint: disable=import-error
+    from RPi import GPIO
 except ImportError:
     from . import gpio_stub as GPIO
-    _LOGGER.warning("RPi.GPIO not available, using stub (development mode)")
 
-from homeassistant.const import (
-    EVENT_HOMEASSISTANT_START,
-    EVENT_HOMEASSISTANT_STOP,
-    Platform,
-)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
+
+from .const import DOMAIN
+
+_LOGGER = logging.getLogger(__package__)
 
 PLATFORMS: list[Platform] = [Platform.VALVE]
 
 
-def setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Set up the Raspberry PI GPIO component."""
-
-    def cleanup_gpio(event):
-        """Stuff to do before stopping."""
-        _LOGGER.debug("Cleanup GPIO")
-        GPIO.cleanup()
-
-    def prepare_gpio(event):
-        """Stuff to do when Home Assistant starts."""
-        hass.bus.listen_once(EVENT_HOMEASSISTANT_STOP, cleanup_gpio)
-
-    _LOGGER.debug("Setup events")
-    hass.bus.listen_once(EVENT_HOMEASSISTANT_START, prepare_gpio)
-    GPIO.setmode(GPIO.BCM)
-    _LOGGER.debug("Setup completed")
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """
+    Called once when the domain loads.
+    With config entries we don't do much here — just ensure our
+    hass.data bucket exists.
+    """
+    hass.data.setdefault(DOMAIN, {})
     return True
 
 
-def setup_output(port):
-    """Set up a GPIO as output."""
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """
+    Called when a config entry is loaded (on HA start, or after being added).
+    This is where we initialise hardware and forward setup to the valve platform.
+    """
+    hass.data.setdefault(DOMAIN, {})
+
+    GPIO.setmode(GPIO.BCM)
+    _LOGGER.debug("GPIO mode set to BCM")
+
+    # Store per-entry data (the lock is shared across all valves in this entry)
+    hass.data[DOMAIN][entry.entry_id] = {
+        "polarity_lock": asyncio.Lock(),
+    }
+
+    # Forward setup to the valve platform — this calls async_setup_entry in valve.py
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Register a listener: when options change, reload the entry so
+    # entities are recreated with the new configuration
+    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
+
+    return True
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """
+    Called when a config entry is removed or HA is stopping.
+    We must undo everything done in async_setup_entry.
+    """
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+    if unload_ok:
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        GPIO.cleanup()
+        _LOGGER.debug("GPIO cleaned up")
+
+    return unload_ok
+
+
+async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """
+    Called by the update listener when options change.
+    A full reload recreates all entities with the updated configuration.
+    """
+    _LOGGER.debug("Reloading entry due to options change")
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
+def setup_output(port: int) -> None:
+    """Set up a GPIO pin as output."""
     GPIO.setup(port, GPIO.OUT)
 
 
-def write_output(port, value):
-    """Write a value to a GPIO."""
+def write_output(port: int, value: int) -> None:
+    """Write a value to a GPIO pin."""
     GPIO.output(port, value)
