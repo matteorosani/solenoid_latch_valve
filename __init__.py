@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import logging
 
-from RPi import GPIO  # pylint: disable=import-error
+_LOGGER = logging.getLogger(__package__)
+
+try:
+    from RPi import GPIO  # pylint: disable=import-error
+except ImportError:
+    from . import gpio_stub as GPIO
+    _LOGGER.warning("RPi.GPIO not available, using stub (development mode)")
 
 from homeassistant.const import (
     EVENT_HOMEASSISTANT_START,
@@ -14,9 +20,7 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
 
-_LOGGER = logging.getLogger(__package__)
-
-PLATFORMS: list[Platform] = [Platform.SWITCH]
+PLATFORMS: list[Platform] = [Platform.VALVE]
 
 
 def setup(hass: HomeAssistant, config: ConfigType) -> bool:

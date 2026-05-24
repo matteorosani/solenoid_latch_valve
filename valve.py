@@ -8,9 +8,10 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.components.switch import (
-    PLATFORM_SCHEMA as SWITCH_PLATFORM_SCHEMA,
-    SwitchEntity,
+from homeassistant.components.valve import (
+    PLATFORM_SCHEMA as VALVE_PLATFORM_SCHEMA,
+    ValveEntity,
+    ValveEntityFeature,
 )
 from homeassistant.const import (
     CONF_NAME,
@@ -18,7 +19,7 @@ from homeassistant.const import (
     CONF_SWITCHES,
     CONF_UNIQUE_ID,
     DEVICE_DEFAULT_NAME,
-    STATE_ON,
+    STATE_OPEN,
 )
 from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
@@ -40,7 +41,7 @@ _VALVE_SCHEMA = vol.Schema(
     }
 )
 
-PLATFORM_SCHEMA = SWITCH_PLATFORM_SCHEMA.extend(
+PLATFORM_SCHEMA = VALVE_PLATFORM_SCHEMA.extend(
     {
         vol.Required(CONF_SWITCHES): vol.All(cv.ensure_list, [_VALVE_SCHEMA]),
         vol.Required(CONF_RED_WIRE_PORT): cv.positive_int,
@@ -64,7 +65,7 @@ def setup_platform(
 
     polarity_lock = hass.data[DOMAIN]["polarity_lock"]
 
-    _LOGGER.debug("Loading switch platform with config %s", config)
+    _LOGGER.debug("Loading valve platform with config %s", config)
 
     valves_conf: list | None = config.get(CONF_SWITCHES)
     red_wire_port = config[CONF_RED_WIRE_PORT]
@@ -91,8 +92,11 @@ def setup_platform(
     add_entities(valves, True)
 
 
-class RPiGPIOValve(SwitchEntity):
+class RPiGPIOValve(ValveEntity):
     """Representation of a Raspberry Pi GPIO."""
+
+    _attr_supported_features = ValveEntityFeature.OPEN | ValveEntityFeature.CLOSE
+    _attr_reports_position = False
 
     def __init__(
         self,
@@ -121,11 +125,11 @@ class RPiGPIOValve(SwitchEntity):
         write_output(self._port, 1)
 
     @property
-    def is_on(self) -> bool | None:
-        """Return true if the valve is open."""
-        return self._state
+    def is_closed(self) -> bool | None:
+        """Return true if the valve is closed."""
+        return not self._state
 
-    async def async_turn_on(self, **kwargs: Any) -> None:
+    async def async_open_valve(self, **kwargs: Any) -> None:
         """Open the valve."""
         _LOGGER.info("Turn on %s", self._attr_name)
         async with self._polarity_lock:
@@ -136,7 +140,7 @@ class RPiGPIOValve(SwitchEntity):
             self._state = True
         self.async_write_ha_state()
 
-    async def async_turn_off(self, **kwargs: Any) -> None:
+    async def async_close_valve(self, **kwargs: Any) -> None:
         """Close the valve."""
         _LOGGER.info("Turn off %s", self._attr_name)
         async with self._polarity_lock:
@@ -158,14 +162,14 @@ class PersistentRPiGPIOValve(RPiGPIOValve, RestoreEntity):
         super().__init__(name, port, red_wire_port, black_wire_port, polarity_lock, unique_id)
 
     async def async_added_to_hass(self) -> None:
-        """Call when the switch is added to hass."""
+        """Call when the valve is added to hass."""
         _LOGGER.debug("Added to HASS called for %s", self._attr_name)
         await super().async_added_to_hass()
         state = await self.async_get_last_state()
         if not state:
             return
-        self._state = state.state == STATE_ON
+        self._state = state.state == STATE_OPEN
         if self._state:
-            await self.async_turn_on()
+            await self.async_open_valve()
         else:
-            await self.async_turn_off()
+            await self.async_close_valve()
