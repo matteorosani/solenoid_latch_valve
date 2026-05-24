@@ -152,7 +152,7 @@ class RPiGPIOValve(ValveEntity):
         self.async_write_ha_state()
 
 
-class PersistentRPiGPIOValve(RPiGPIOValve, RestoreEntity):
+class PersistentRPiGPIOValve(RestoreEntity, RPiGPIOValve):
     """Representation of a persistent Raspberry Pi GPIO."""
 
     def __init__(
